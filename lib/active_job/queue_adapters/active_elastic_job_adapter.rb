@@ -56,7 +56,7 @@ module ActiveJob
       #    #..
       #  end
       class NonExistentQueue < Error
-        def initialize(queue_name)
+        def initialize(queue_name, config, queue_urls)
 
           super(<<-MSG)
             The job is bound to queue at #{queue_name}.
@@ -64,6 +64,13 @@ module ActiveJob
             region. Either create an Amazon SQS queue named #{queue_name} -
             you can do this in AWS console, make sure to select region
             '#{ENV['AWS_REGION']}' - or you select another queue for your jobs.
+
+            REGION:            #{config.region}
+            ACCESS_KEY_ID:     #{config.access_key_id}
+            SECRET_ACCESS_KEY: #{config.secret_access_key}
+
+            QUEUE_URLS:
+            #{queue_urls}
           MSG
         end
       end
@@ -106,12 +113,6 @@ module ActiveJob
               message[:message_body],
               message[:message_attributes])
           end
-        rescue Aws::SQS::Errors::NonExistentQueue => e
-          unless @queue_urls[job.queue_name.to_s].nil?
-            @queue_urls[job.queue_name.to_s] = nil
-            retry
-          end
-          raise NonExistentQueue, job
         rescue Aws::Errors::ServiceError => e
           raise Error, "Could not enqueue job, #{e.message}"
         end
@@ -141,13 +142,11 @@ module ActiveJob
         end
 
         def queue_url(queue_name)
-          cache_key = queue_name.to_s
-          @queue_urls ||= { }
-          return @queue_urls[cache_key] if @queue_urls[cache_key]
-          resp = aws_sqs_client.get_queue_url(queue_name: queue_name.to_s)
-          @queue_urls[cache_key] = resp.queue_url
+          Thread.current[:queue_urls] ||= {}
+          Thread.current[:queue_urls][queue_name.to_s] ||= aws_sqs_client.
+            get_queue_url(queue_name: queue_name.to_s).queue_url
         rescue Aws::SQS::Errors::NonExistentQueue => e
-          raise NonExistentQueue, queue_name
+          raise NonExistentQueue.new(queue_name, aws_sqs_client.config, Thread.current[:queue_urls])
         end
 
         def calculate_delay(timestamp)
@@ -171,17 +170,16 @@ module ActiveJob
         end
 
         def aws_sqs_client
-          @aws_key ||= ENV['AWS_SECRET_ACCESS_KEY'] || ENV['AWS_SECRET_KEY'] || ENV['AMAZON_SECRET_ACCESS_KEY']
-          @aws_sqs_client ||= Aws::SQS::Client.new(
+          Thread.current[:aws_sqs_client] ||= Aws::SQS::Client.new(
             access_key_id: ENV['AWS_ACCESS_KEY_ID'],
-            secret_access_key: @aws_key,
+            secret_access_key: ENV['AWS_SECRET_ACCESS_KEY'],
             region: ENV['AWS_REGION']
           )
         end
 
         def message_digest(messsage_body)
-          @verifier ||= ActiveElasticJob::MessageVerifier.new(secret_key_base)
-          @verifier.generate_digest(messsage_body)
+          (Thread.current[:verifier] ||= ActiveElasticJob::MessageVerifier.new(secret_key_base)).
+            generate_digest(messsage_body)
         end
 
         def verify_md5_digests!(response, messsage_body, message_attributes)
@@ -201,7 +199,7 @@ module ActiveJob
         end
 
         def secret_key_base
-          @secret_key_base ||= Rails.application.secrets[:secret_key_base]
+          Thread.current[:secret_key_base] ||= Rails.application.secrets[:secret_key_base]
         end
       end
     end

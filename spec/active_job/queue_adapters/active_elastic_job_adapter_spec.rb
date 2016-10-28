@@ -58,18 +58,6 @@ describe ActiveJob::QueueAdapters::ActiveElasticJobAdapter do
       end
     end
 
-    context "when queue does not exist" do
-      before do
-        allow(adapter).to receive(:queue_url) { raise StubbedError }
-      end
-
-      it "raises NonExistentQueue error" do
-        expect do
-          adapter.enqueue(job)
-        end.to raise_error(
-          ActiveJob::QueueAdapters::ActiveElasticJobAdapter::NonExistentQueue)
-      end
-    end
   end
 
   describe ".enqueue_at" do
